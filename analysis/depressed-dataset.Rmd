@@ -1,0 +1,596 @@
+---
+title: "Predicting the Probability of Depression — Logistic Regression"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Predicting the probability of depression
+
+Logistic regression on survey data from rural parts of an unnamed country
+(n = 1,401 after cleaning). Three sequential models predict the probability
+of depression from sex, age, marital status, education level and living
+expenses. R 4.0.2. Packages used: tidyverse, ggalt, gridExtra, broom,
+ggpubr, dplyr, car, psych, Hmisc, ggplot2, gmodels, DescTools, stargazer,
+semTools, corrplot, Epi, lmtest, rcompanion.
+
+---
+
+```{r}
+library(tidyverse) # general
+library(ggalt) # dumbbell plots
+library(gridExtra) # plots
+library(broom) # significant trends within countries
+library(ggpubr)
+library(dplyr)
+library(car)
+library(psych)
+library(Hmisc)
+library(psych)
+library(ggplot2)
+library(gmodels)
+```
+
+```{r}
+## Loading dataset
+depresseddata <- read.csv("../data/b_depressed.csv")
+
+## Summary statistics
+Hmisc::describe(depresseddata)
+
+### Removing NAs
+sum(is.na(depresseddata))
+na.omit(depresseddata$Age)
+depresseddata <- na.omit(depresseddata)
+
+```
+
+Converting age into categorical
+
+```{r}
+## Getting a sense of the qnt
+quantile(depresseddata$Age)
+
+## Converting to buckets
+depresseddata$Age <- cut(depresseddata$Age, c(17,25,44,64,91),  labels = c("17-24", "25-44", "45-64", "65-91"))
+depresseddata$Age
+
+## Getting levels
+levels(depresseddata$Age)
+
+## Summary of values for write up
+summary(factor(depresseddata$Age))
+```
+
+#### Visualisations
+
+Barcharts for age and depression
+
+```{r}
+library(ggplot2)
+ggplot(depresseddata, aes(depressed, ..count..)) +
+   geom_bar(aes(fill = Age), position = position_dodge(width = .8),  alpha = .8, vjust = 1.5, color = "white") +
+   #title('Depression by Age') +
+   labs(y="Levels of Depression", x = "Age Groups") +
+   theme(axis.text=element_text(size=10))
+```
+Barchart for sex and depression
+
+```{r}
+library(ggplot2)
+ggplot(depresseddata, aes(depressed, ..count..)) +
+   geom_bar(aes(fill = sex), position = position_dodge(width = .8),  alpha = .8, vjust = 1.5, color = "white") +
+   ggtitle('Depression by Sex') +
+   labs(y="Levels of Depression by Sex", x = "Sex") +
+   theme(axis.text=element_text(size=10))
+```
+
+
+### Getting key statistics and numbers for Methodology section of the paper.
+
+```{r}
+## Summary stats for all variables
+summary(factor(depresseddata$depressed))
+summary(factor(depresseddata$sex))
+summary(factor(depresseddata$Age))
+summary(factor(depresseddata$Married))
+
+summary(depresseddata$education_level)
+round(sd(depresseddata$education_level,2))
+
+summary(depresseddata$living_expenses)
+round(sd(depresseddata$living_expenses,2))
+```
+
+### Descriptive stats for normality for each numerical variables
+
+Education Level is normally distributed when we remove outliers.
+
+https://www.introspective-mode.org/getting-the-hang-of-z-scores/
+
+```{r}
+
+x <- depresseddata$education_level
+h<-hist(x,
+ breaks=12,
+ col="blue",
+ xlab="Education Level",
+ main="Distribution of Education Level")
+
+xfit<-seq(min(x), max(x), length=40)
+yfit<-dnorm(xfit, mean=mean(x), sd=sd(x))
+yfit <- yfit*diff(h$mids[1:2])*length(x)
+lines(xfit, yfit, col="red", lwd=2)
+box()
+
+## Removing outliers and re-plotting
+Q <- quantile(depresseddata$education_level, probs=c(.25, .75), na.rm = FALSE)
+iqr <- IQR(depresseddata$education_level)
+up <-  Q[2]+2.5*iqr # Upper Range @ +/- 1.96 cut off
+low<- Q[1]-1.5*iqr # Lower Range
+
+educationountoutliers <- subset(depresseddata, depresseddata$education_level > (Q[1] - 1.5*iqr) & depresseddata$education_level  < (Q[2]+2.5*iqr))
+
+x <- educationountoutliers$education_level
+h<-hist(x,
+ breaks=12,
+ col="blue",
+ xlab="Education Level",
+ main="Education Level Distribution")
+
+xfit<-seq(min(x), max(x), length=40)
+yfit<-dnorm(xfit, mean=mean(x), sd=sd(x))
+yfit <- yfit*diff(h$mids[1:2])*length(x)
+lines(xfit, yfit, col="red", lwd=2)
+box()
+
+#skewness and kurtosis from semTools with standard error
+tpskew<-semTools::skew(depresseddata$education_level)
+tpkurt<-semTools::kurtosis(depresseddata$education_level)
+#We divide the skew statistic by the standard error to get the standardised score
+tpskew[1]/tpskew[2]
+tpkurt[1]/tpkurt[2]
+
+library(ggpubr)
+ggqqplot(depresseddata$education_level)
+
+shapiro.test(depresseddata$education_level)
+
+
+```
+
+Living Expenses = the money that has to be spent on food, housing, clothes, transport etc.(https://www.collinsdictionary.com/dictionary/english/living-expenses)
+
+```{r}
+x <- depresseddata$living_expenses
+h<-hist(x,
+ breaks=12,
+ col="blue",
+ xlab="Living Expenses",
+ main="Distribution of Living Expenses")
+
+xfit<-seq(min(x), max(x), length=40)
+yfit<-dnorm(xfit, mean=mean(x), sd=sd(x))
+yfit <- yfit*diff(h$mids[1:2])*length(x)
+lines(xfit, yfit, col="red", lwd=2)
+box()
+
+## Removing outliers and re-plotting
+Q <- quantile(depresseddata$living_expenses, probs=c(.25, .75), na.rm = FALSE)
+iqr <- IQR(depresseddata$living_expenses)
+up <-  Q[2]+2.5*iqr # Upper Range @ +/- 1.96 cut off
+low<- Q[1]-1.5*iqr # Lower Range
+
+livingexpensestoutliers <- subset(depresseddata, depresseddata$living_expenses > (Q[1] - 1.5*iqr) & depresseddata$living_expenses  < (Q[2]+2.5*iqr))
+
+x <- livingexpensestoutliers$living_expenses
+h<-hist(x,
+ breaks=12,
+ col="blue",
+ xlab="Living Expenses",
+ main="Living Expenses Distribution")
+
+xfit<-seq(min(x), max(x), length=40)
+yfit<-dnorm(xfit, mean=mean(x), sd=sd(x))
+yfit <- yfit*diff(h$mids[1:2])*length(x)
+lines(xfit, yfit, col="red", lwd=2)
+box()
+
+#skewness and kurtosis from semTools with standard error
+tpskew<-semTools::skew(depresseddata$living_expenses)
+tpkurt<-semTools::kurtosis(depresseddata$living_expenses)
+#We divide the skew statistic by the standard error to get the standardised score
+tpskew[1]/tpskew[2]
+tpkurt[1]/tpkurt[2]
+
+## Shapiro test
+shapiro.test(depresseddata$living_expenses)
+
+```
+
+### Differences and Correlations
+
+```{r, eval= FALSE}
+raqMatrix<-cor(depresseddata)
+corrplot::corrplot(raqMatrix, method="circle", type="upper")
+```
+
+Depression is 0 = Depressed, 1 = Not Depressed
+
+1. Sex is 0 = Male, 1 = Female
+
+Chi Square tests for sex and depression
+Chi^2 =  0.010     d.f. =  1     p =  0.922
+phi = 0.003
+
+```{r}
+library (gmodels)
+CrossTable(depresseddata$depressed, depresseddata$sex, fisher = TRUE, chisq = TRUE, expected = TRUE,sresid = TRUE, format = 'SPSS')
+
+mytableSex<-xtabs(~depressed+sex, data=depresseddata)
+ctest<-chisq.test(mytableSex, correct=TRUE)
+
+ctest#will give you the details of the test statistic and p-value
+ctest$expected#expected frequencies
+ctest$observed#observed frequencies
+ctest$p.value
+
+library(DescTools)
+phi.test <- Phi(mytableSex)  # the Phi function uses DescTools package
+phi.test
+
+```
+
+Chi Square tests for marriage and depression
+
+2. Married is 0 = Not Married, 1 = Married
+
+The null hypothesis (H0) states: Depression is not associated of Marriage.
+
+Chi^2 =  5.437     d.f. =  1     p =  0.0197
+
+phi = 0.062
+
+Since the p-value is less than our chosen significance level α = 0.05, we can reject the null hypothesis, and conclude that there is an association.
+```{r}
+library (gmodels)
+CrossTable(depresseddata$depressed, depresseddata$Married, fisher = TRUE, chisq = TRUE, expected = TRUE,sresid = TRUE, format = 'SPSS')
+
+mytableMarried<-xtabs(~depressed+Married, data=depresseddata)
+ctest<-chisq.test(mytableMarried, correct=TRUE)
+
+ctest#will give you the details of the test statistic and p-value
+ctest$expected#expected frequencies
+ctest$observed#observed frequencies
+ctest$p.value
+
+library(DescTools)
+phi.test <- Phi(mytableMarried)  # the Phi function uses DescTools package
+phi.test
+
+```
+
+Getting test for age
+
+```{r}
+library (gmodels)
+CrossTable(depresseddata$depressed, depresseddata$Age, fisher = TRUE, chisq = TRUE, expected = TRUE,sresid = TRUE, format = 'SPSS')
+
+mytableAge<-xtabs(~depressed+Age, data=depresseddata)
+ctest<-chisq.test(mytableAge, correct=TRUE)
+
+ctest#will give you the details of the test statistic and p-value
+ctest$expected#expected frequencies
+ctest$observed#observed frequencies
+ctest$p.value
+
+library(DescTools)
+phi.test <- Phi(mytableAge)  # the Phi function uses DescTools package
+phi.test
+
+```
+
+#### T Test for continuous variables
+
+https://www.sheffield.ac.uk/polopoly_fs/1.885207!/file/99_Mann_Whitney_U_Test.pdf
+
+data:  education_level by depressed
+W = 153770, p-value = 0.0014
+
+data:  living_expenses by depressed
+W = 145083, p-value = 0.102
+
+```{r}
+# Test for differences on  education level
+stats::wilcox.test(education_level~depressed, data=depresseddata)
+
+depressed1 <- subset(depresseddata, depressed==0)
+notdepressed <-subset(depresseddata, depressed==1)
+
+library(ggplot2)
+#Create plots of these
+gs <- ggplot(depressed1, aes(x=depressed1$education_level))
+gs <- gs + labs(x="Depressed")
+gs <- gs + geom_histogram(binwidth=2, colour="black", aes(y=..density.., fill=..count..))
+gs <- gs + scale_fill_gradient("Count", low="#DCDCDC", high="#7C7C7C")
+gs <- gs + stat_function(fun=dnorm, color="red",args=list(mean=mean(depressed1$education_level, na.rm=TRUE), sd=sd(depressed1$education_level, na.rm=TRUE)))
+gs
+
+gs <- ggplot(notdepressed, aes(x=notdepressed$education_level))
+gs <- gs + labs(x="Not Depressed")
+gs <- gs + geom_histogram(binwidth=2, colour="black", aes(y=..density.., fill=..count..))
+gs <- gs + scale_fill_gradient("Count", low="#DCDCDC", high="#7C7C7C")
+gs <- gs + stat_function(fun=dnorm, color="red",args=list(mean=mean(notdepressed$education_level, na.rm=TRUE), sd=sd(notdepressed$education_level, na.rm=TRUE)))
+gs
+
+median(depressed1$education_level)
+median(notdepressed$education_level)
+
+```
+
+```{r}
+# Test for differences on living expenses
+wilcox.test(living_expenses~depressed, data=depresseddata)
+
+median(depressed1$living_expenses)
+median(notdepressed$living_expenses)
+
+library(ggplot2)
+#Create plots of these
+gs <- ggplot(depressed1, aes(x=living_expenses))
+gs <- gs + labs(x="Depressed")
+gs <- gs + geom_histogram(binwidth=2, colour="black", aes(y=..density.., fill=..count..))
+gs <- gs + scale_fill_gradient("Count", low="#DCDCDC", high="#7C7C7C")
+gs <- gs + stat_function(fun=dnorm, color="red",args=list(mean=mean(depressed1$living_expenses, na.rm=TRUE), sd=sd(depressed1$living_expenses, na.rm=TRUE)))
+gs
+
+gs <- ggplot(notdepressed, aes(x=living_expenses))
+gs <- gs + labs(x="Not Depressed")
+gs <- gs + geom_histogram(binwidth=2, colour="black", aes(y=..density.., fill=..count..))
+gs <- gs + scale_fill_gradient("Count", low="#DCDCDC", high="#7C7C7C")
+gs <- gs + stat_function(fun=dnorm, color="red",args=list(mean=mean(notdepressed$living_expenses, na.rm=TRUE), sd=sd(notdepressed$living_expenses, na.rm=TRUE)))
+gs
+```
+
+#### Building our Logistic Regression Model - Baseline
+
+Building the model itself
+
+Likelihood ratio test: Chi^2 = 0.05 on 1 DF, p-value: 0.831
+
+```{r}
+library("car")
+library("stargazer")
+
+logmodel1 <- glm(depressed ~ sex, data=depresseddata, na.action=na.exclude, family=binomial())
+logmodel1
+
+summary(logmodel1)
+stargazer(logmodel1, type="text")
+```
+
+Digging into the model a bit further
+```{r}
+## Looking at Pr(>Chisq)
+## 0.8314
+lmtest::lrtest(logmodel1)
+
+## Test for pseudo R2 and chi square.
+## R Squared is tiny
+rcompanion::nagelkerke(logmodel1, restrictNobs = T)
+
+## Exponential coefficients.
+exp(coefficients(logmodel1))
+
+## Plot a ROC curve and look for specificity and sensitivity.
+## We want to look at the Area under the curve
+## .5 is weak, .8 is strong
+## AUC = 0.502
+
+Epi::ROC(form=depresseddata$depressed ~ depresseddata$sex, plot="ROC")
+
+## the table of deviance
+anova(logmodel1, test="Chisq")
+
+## Odds Ratios
+library(dplyr)
+odds<-depresseddata %>%
+        group_by(depressed,sex) %>%
+        summarise(freq=n()) %>%
+        mutate(all=sum(freq),prob=freq/all,odds=prob/(1-prob),logodds=log(odds)) %>%
+        round(.,5)
+odds
+
+## Zone in on Chi for the model to check for improvement
+modelChi <- logmodel1$null.deviance - logmodel1$deviance
+modelChi
+
+## Zone in on Degrees of freedom for our model (will usually be 1)
+## 5
+chidf <- logmodel1$df.null - logmodel1$df.residual
+chidf
+
+## Zone in on Chi for getting the probability or no model pr baseline
+chisq.prob <- 1 - pchisq(modelChi, chidf)
+chisq.prob
+```
+
+#### Building our Logistic Regression Model - Model 2
+
+Including Age and Marriage into the model
+
+             Estimate  Std. Error  z value  Pr(>|z|)
+Age65-91     0.8509     0.3186     2.671     0.0076 **
+
+AIC: 1259.4
+
+```{r}
+library("car")
+library("stargazer")
+
+logmodel2 <- glm(depressed ~ sex + Age + Married, data=depresseddata, na.action=na.exclude, family=binomial())
+logmodel2
+
+summary(logmodel2)
+stargazer(logmodel2, type="text")
+```
+
+Digging into the model a bit further
+
+Fit for model
+
+[1] 13.45
+[1] 5
+[1] 0.0195
+
+```{r, eval = FALSE}
+## Looking at Pr(>Chisq)
+lmtest::lrtest(logmodel2)
+
+## Test for pseudo R2 and chi square.
+## R Squared is tiny at  0.0096 to  0.0161
+rcompanion::nagelkerke(logmodel2, restrictNobs = T)
+
+## Exponential coefficients.
+exp(coefficients(logmodel2))
+
+## Plot a ROC curve and look for specificity and sensitivity.
+## We want to look at the Area under the curve
+## .5 is weak, .8 is strong
+## AUC = 0.550
+Epi::ROC(form=depresseddata$depressed ~ depresseddata$Age, plot="ROC")
+
+## Zone in on Chi for the model to check for improvement
+modelChi <- logmodel2$null.deviance - logmodel2$deviance
+modelChi
+
+## Zone in on Degrees of freedom for our model (will usually be 1)
+## 5
+chidf <- logmodel2$df.null - logmodel2$df.residual
+chidf
+
+## Zone in on Chi for getting the probability or no model pr baseline
+chisq.prob <- 1 - pchisq(modelChi, chidf)
+chisq.prob
+
+## Odds Ratios
+library(dplyr)
+odds<-depresseddata %>%
+        group_by(depressed, Married) %>%
+        summarise(freq=n()) %>%
+        mutate(all=sum(freq),prob=freq/all,odds=prob/(1-prob),logodds=log(odds)) %>%
+        round(.,5)
+odds
+
+#Collinearity
+library(car)
+vifmodel<-vif(logmodel2)
+1/vifmodel
+```
+
+#### Building our Logistic Regression Model - Model 3
+
+Including Education Level and Living Expenses into the model 3
+
+education_level -6.07e-02  2.67e-02  -2.278   0.0227 *
+
+AIC: 1257.7
+
+```{r}
+library("car")
+library("stargazer")
+
+logmodel3 <- glm(depressed ~ sex + Age + Married + education_level + living_expenses, data=depresseddata, na.action=na.exclude, family=binomial())
+logmodel3
+
+summary(logmodel3)
+stargazer(logmodel3, type="text")
+```
+
+Collinearity: Values of VIF do not exceed 2.5 or are lower than 0.4
+
+                     GVIF        Df GVIF^(1/(2*Df))
+sex             0.8865069 1.0000000       0.9415450
+Age             0.6897035 0.3333333       0.9399622
+Married         0.7742340 1.0000000       0.8799057
+education_level 0.7439319 1.0000000       0.8625149
+living_expenses 0.9963813 1.0000000       0.9981890
+
+Model of fit Chi Square
+
+[1] 19.18 --
+[1] 7 -- DF, how many variables + 1
+[1] 0.0077 -- new model is significant ss it's closer to 0
+
+```{r, eval = FALSE}
+## Looking at Pr(>Chisq)
+## 0.0077
+lmtest::lrtest(logmodel3)
+
+## Test for pseudo R2 and chi square.
+## R Squared is tiny at 0.0136 to 0.0229
+rcompanion::nagelkerke(logmodel3, restrictNobs = T)
+
+## Exponential coefficients.
+exp(coefficients(logmodel3))
+
+## Zone in on Chi for the model to check for improvement
+modelChi <- logmodel3$null.deviance - logmodel3$deviance
+modelChi
+
+## Zone in on Degrees of freedom for our model (will usually be 1)
+## 5
+chidf <- logmodel3$df.null - logmodel3$df.residual
+chidf
+
+## Zone in on Chi for getting the probability or no model pr baseline
+chisq.prob <- 1 - pchisq(modelChi, chidf)
+chisq.prob
+
+## Plot a ROC curve and look for specificity and sensitivity.
+## We want to look at the Area under the curve
+## .5 is weak, .8 is strong
+## AUC = 0.574
+Epi::ROC(form=depresseddata$depressed ~ depresseddata$sex + depresseddata$Age + depresseddata$Married + depresseddata$living_expenses + depresseddata$education_level, plot="ROC")
+
+#Check assumptions
+#Cooks distance
+cooks.distance(logmodel3)
+#Plot Cooks distance
+plot(cooks.distance(logmodel3), ylab='Cooks statistic')
+
+#Create histogram
+#A density plot of the residuals
+resid(logmodel3)
+plot(density(resid(logmodel3)))
+
+#Create a QQ plotqqPlot(model, main="QQ Plot") #qq plot for studentized resid
+leveragePlots(logmodel3) # leverage plots
+
+#Collinearity
+library(car)
+vifmodel<-vif(logmodel3)
+1/vifmodel
+
+## the table of deviance
+## Analyzing the table we can see the drop in deviance when adding each variable one at a time.
+anova(logmodel3, test="Chisq")
+
+## Odds Ratios
+library(dplyr)
+odds<-depresseddata %>%
+        group_by(depressed, education_level) %>%
+        summarise(freq=n()) %>%
+        mutate(all=sum(freq),prob=freq/all,odds=prob/(1-prob),logodds=log(odds)) %>%
+        round(.,5)
+odds
+
+library(dplyr)
+odds<-depresseddata %>%
+        group_by(depressed, living_expenses) %>%
+        summarise(freq=n()) %>%
+        mutate(all=sum(freq),prob=freq/all,odds=prob/(1-prob),logodds=log(odds)) %>%
+        round(.,5)
+odds
+
+```
